@@ -1,11 +1,34 @@
-name: Build Windows EXE
+# .github/workflows/build.yml
+#
+# Сборка peer-клиента под Windows и macOS (Intel + Apple Silicon)
+# + автоматическая публикация GitHub Release при пуше git-тега вида v1.0
+#
+# Триггеры:
+#   * push в main          → сборка артефактов (без Release)
+#   * push тега vX.Y       → сборка + публикация Release с бинарями
+#   * workflow_dispatch    → ручной запуск из UI Actions (можно указать тег)
+
+name: Build & Release
 
 on:
   push:
     branches: [main]
-  workflow_dispatch: # ручной запуск через UI
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create release for (e.g. v1.0). Leave empty for build-only."
+        required: false
+        default: ""
+
+# Переменная для версии — берётся из тега или короткого SHA коммита
+env:
+  PYTHON_VERSION: "3.12"
 
 jobs:
+  # ─────────────────────────────────────────────────────────
+  # WINDOWS x64
+  # ─────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
     steps:
@@ -14,12 +37,29 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install aiohttp pynput mss Pillow winotify pyinstaller
+
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version: ${VERSION}"
+
+      - name: Write version file
+        shell: bash
+        run: echo "${{ steps.ver.outputs.version }}" > VERSION
 
       - name: Build EXE
         run: |
@@ -27,10 +67,214 @@ jobs:
             --hidden-import=winotify `
             --hidden-import=pynput.keyboard._win32 `
             --hidden-import=pynput.mouse._win32 `
+            --add-data "VERSION;." `
             peer.py
+
+      - name: Package + checksum
+        shell: bash
+        run: |
+          cd dist
+          VERSION="${{ steps.ver.outputs.version }}"
+          ARCHIVE="peer-${VERSION}-windows-x64.zip"
+          7z a "${ARCHIVE}" peer.exe
+          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          ls -la
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: peer-windows
-          path: dist/peer.exe
+          name: peer-windows-x64
+          path: |
+            dist/peer-*-windows-x64.zip
+            dist/peer-*-windows-x64.zip.sha256
+
+  # ─────────────────────────────────────────────────────────
+  # macOS — Apple Silicon (arm64) на macos-14 runner
+  # ─────────────────────────────────────────────────────────
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install aiohttp pynput mss Pillow pyinstaller
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Write version file
+        run: echo "${{ steps.ver.outputs.version }}" > VERSION
+
+      - name: Build binary
+        run: |
+          pyinstaller --onefile --name peer --console --clean \
+            --hidden-import=pynput.keyboard._darwin \
+            --hidden-import=pynput.mouse._darwin \
+            --add-data "VERSION:." \
+            peer.py
+
+      - name: Package + checksum
+        run: |
+          cd dist
+          VERSION="${{ steps.ver.outputs.version }}"
+          ARCHIVE="peer-${VERSION}-macos-arm64.tar.gz"
+          chmod +x peer
+          tar -czvf "${ARCHIVE}" peer
+          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: peer-macos-arm64
+          path: |
+            dist/peer-*-macos-arm64.tar.gz
+            dist/peer-*-macos-arm64.tar.gz.sha256
+
+  # ─────────────────────────────────────────────────────────
+  # macOS — Intel (x86_64) на macos-13 runner
+  # ─────────────────────────────────────────────────────────
+  build-macos-x86_64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install aiohttp pynput mss Pillow pyinstaller
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Write version file
+        run: echo "${{ steps.ver.outputs.version }}" > VERSION
+
+      - name: Build binary
+        run: |
+          pyinstaller --onefile --name peer --console --clean \
+            --hidden-import=pynput.keyboard._darwin \
+            --hidden-import=pynput.mouse._darwin \
+            --add-data "VERSION:." \
+            peer.py
+
+      - name: Package + checksum
+        run: |
+          cd dist
+          VERSION="${{ steps.ver.outputs.version }}"
+          ARCHIVE="peer-${VERSION}-macos-x86_64.tar.gz"
+          chmod +x peer
+          tar -czvf "${ARCHIVE}" peer
+          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: peer-macos-x86_64
+          path: |
+            dist/peer-*-macos-x86_64.tar.gz
+            dist/peer-*-macos-x86_64.tar.gz.sha256
+
+  # ─────────────────────────────────────────────────────────
+  # RELEASE — публикуется при пуше тега vX.Y или ручном запуске с указанным тегом
+  # ─────────────────────────────────────────────────────────
+  release:
+    needs: [build-windows, build-macos-arm64, build-macos-x86_64]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="${{ github.event.inputs.release_tag }}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          # pre-release если содержит -beta, -rc, -alpha
+          if [[ "${TAG}" =~ -(beta|rc|alpha) ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: List downloaded files
+        run: find artifacts -type f -print
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: peer ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          body: |
+            ## peer — релиз ${{ steps.tag.outputs.tag }}
+
+            ### Скачать
+
+            - **Windows (64-bit):** `peer-${{ steps.tag.outputs.tag }}-windows-x64.zip`
+            - **macOS Apple Silicon (M1/M2/M3/M4):** `peer-${{ steps.tag.outputs.tag }}-macos-arm64.tar.gz`
+            - **macOS Intel:** `peer-${{ steps.tag.outputs.tag }}-macos-x86_64.tar.gz`
+
+            ### Установка
+
+            **Windows:** распакуйте zip → запустите `peer.exe`.
+
+            **macOS:** распакуйте tar.gz → откройте Terminal в папке с файлом → `./peer`.
+            При первом запуске macOS заблокирует бинарь (Gatekeeper).
+            Решение: `xattr -d com.apple.quarantine ./peer` либо
+            System Settings → Privacy & Security → Open Anyway.
+
+            ### Проверка целостности
+
+            Рядом с каждым архивом лежит файл `.sha256`. Сверка:
+            ```
+            sha256sum -c peer-${{ steps.tag.outputs.tag }}-windows-x64.zip.sha256
+            ```
+
+            ---
+            Список изменений ниже сгенерирован автоматически.
+          files: |
+            artifacts/peer-windows-x64/*
+            artifacts/peer-macos-arm64/*
+            artifacts/peer-macos-x86_64/*

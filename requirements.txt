@@ -1,0 +1,7 @@
+# Runtime-зависимости peer-клиента + сборка через PyInstaller
+aiohttp
+pynput
+mss
+Pillow
+winotify ; sys_platform == "win32"
+pyinstaller
